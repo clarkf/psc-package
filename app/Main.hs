@@ -10,6 +10,7 @@ module Main where
 import qualified Control.Foldl as Foldl
 import           Control.Concurrent.Async (forConcurrently_)
 import qualified Data.Aeson as Aeson
+import           Data.Aeson ((.:), (.:?), (.!=), (.=))
 import           Data.Aeson.Encode.Pretty
 import           Data.Foldable (fold, for_, traverse_)
 import qualified Data.Graph as G
@@ -49,11 +50,29 @@ packageFile :: Path.FilePath
 packageFile = "psc-package.json"
 
 data PackageConfig = PackageConfig
-  { name    :: PackageName
-  , depends :: [PackageName]
-  , set     :: Text
-  , source  :: Text
-  } deriving (Show, Generic, Aeson.FromJSON, Aeson.ToJSON)
+  { name          :: PackageName
+  , depends       :: [PackageName]
+  , set           :: Text
+  , source        :: Text
+  , extraPackages :: PackageSet
+  } deriving (Show, Generic)
+
+instance Aeson.FromJSON PackageConfig where
+  parseJSON = Aeson.withObject "PackageConfig" $ \v -> PackageConfig
+    <$> v .:  "name"
+    <*> v .:  "depends"
+    <*> v .:  "set"
+    <*> v .:  "source"
+    <*> v .:? "extra_packages" .!= Map.empty
+
+instance Aeson.ToJSON PackageConfig where
+  toJSON c = Aeson.object
+    [ "name"           .= name c
+    , "depends"        .= depends c
+    , "set"            .= set c
+    , "source"         .= source c
+    , "extra_packages" .= extraPackages c
+    ]
 
 pathToTextUnsafe :: Turtle.FilePath -> Text
 pathToTextUnsafe = either (error "Path.toText failed") id . Path.toText
@@ -141,14 +160,14 @@ getPackageSet PackageConfig{ source, set } = do
   unless exists . void $ cloneShallow source set pkgDir
 
 readPackageSet :: PackageConfig -> IO PackageSet
-readPackageSet PackageConfig{ set } = do
+readPackageSet PackageConfig{ set, extraPackages } = do
   let dbFile = ".psc-package" </> fromText set </> ".set" </> "packages.json"
   exists <- testfile dbFile
   unless exists $ exitWithErr $ format (fp%" does not exist") dbFile
   mdb <- Aeson.eitherDecodeStrict . encodeUtf8 <$> readTextFile dbFile
   case mdb of
     Left errors -> exitWithErr $ "Unable to parse packages.json: " <> T.pack errors
-    Right db -> return db
+    Right db -> return $ Map.union extraPackages db
 
 writePackageSet :: PackageConfig -> PackageSet -> IO ()
 writePackageSet PackageConfig{ set } =
@@ -210,16 +229,18 @@ initialize setAndSource = do
         echoT ("Using the default package set for PureScript compiler version " <>
           fromString (showVersion pursVersion))
         echoT "(Use --source / --set to override this behavior)"
-        pure PackageConfig { name    = pkgName
-                           , depends = [ preludePackageName ]
-                           , source  = "https://github.com/purescript/package-sets.git"
-                           , set     = "psc-" <> pack (showVersion pursVersion)
+        pure PackageConfig { name          = pkgName
+                           , depends       = [ preludePackageName ]
+                           , source        = "https://github.com/purescript/package-sets.git"
+                           , set           = "psc-" <> pack (showVersion pursVersion)
+                           , extraPackages = Map.empty
                            }
       Just (set, source) ->
-        pure PackageConfig { name    = pkgName
-                           , depends = [ preludePackageName ]
-                           , source  = fromMaybe "https://github.com/purescript/package-sets.git" source
+        pure PackageConfig { name          = pkgName
+                           , depends       = [ preludePackageName ]
+                           , source        = fromMaybe "https://github.com/purescript/package-sets.git" source
                            , set
+                           , extraPackages = Map.empty
                            }
 
     writePackageFile pkg
